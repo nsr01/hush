@@ -195,7 +195,7 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
   function save(){try{localStorage.setItem('hush-v3',JSON.stringify(S));}catch(e){}}
 
   // ---------- audio engine ----------
-  let ctx=null,bus,fadeG,lim,outEl=null,keepEl=null,artUrl=null,keepLock=false,sessKey='';
+  let ctx=null,bus,fadeG,lim,keepEl=null,artUrl=null,keepLock=false,sessKey='';
   const buffers={}, playing={};
   let endAt=0,totalMs=0,fading=false,wakeLock=null,wasPlaying=false;
 
@@ -212,20 +212,8 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
     lim=ctx.createDynamicsCompressor();
     lim.threshold.value=-8;lim.knee.value=6;lim.ratio.value=12;lim.attack.value=.005;lim.release.value=.25;
     bus.connect(bq('lowpass',9000,.5)).connect(g(.5)).connect(fadeG).connect(lim);
-    routeOutput();setupMediaSession();
+    lim.connect(ctx.destination);setupMediaSession();
     return true;
-  }
-  function routeOutput(){
-    let ok=false;
-    try{
-      if(ctx.createMediaStreamDestination){
-        const dest=ctx.createMediaStreamDestination();lim.connect(dest);
-        outEl=document.createElement('audio');outEl.setAttribute('playsinline','');outEl.srcObject=dest.stream;
-        const p=outEl.play();ok=true;
-        if(p&&p.catch)p.catch(()=>{try{lim.disconnect();}catch(e){}lim.connect(ctx.destination);outEl=null;});
-      }
-    }catch(e){ok=false;}
-    if(!ok){try{lim.disconnect();}catch(e){}lim.connect(ctx.destination);outEl=null;}
   }
   function makeWav(sec){
     const sr=8000,n=sr*sec,b=new ArrayBuffer(44+n*2),v=new DataView(b);
@@ -239,12 +227,9 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
     return 'data:audio/wav;base64,'+btoa(str);
   }
   function playEl(el){if(el&&el.paused){try{const p=el.play();if(p&&p.catch)p.catch(()=>{});}catch(e){}}}
-  function wake(){
-    if(!ctx)return;if(ctx.state!=='running')ctx.resume();
-    try{if(!keepEl){keepEl=new Audio(makeWav(6));keepEl.loop=true;keepEl.setAttribute('playsinline','');}}catch(e){}
-    playEl(outEl);playEl(keepEl);
-  }
-  function releaseOutput(){try{outEl&&outEl.pause();}catch(e){}try{keepEl&&keepEl.pause();}catch(e){}}
+  function makeKeep(){try{if(!keepEl){keepEl=new Audio(makeWav(6));keepEl.loop=true;keepEl.setAttribute('playsinline','');}}catch(e){}}
+  function wake(){if(!ctx)return;makeKeep();playEl(keepEl);if(ctx.state!=='running'){try{return ctx.resume();}catch(e){}}return Promise.resolve();}
+  function releaseOutput(){try{keepEl&&keepEl.pause();}catch(e){}try{if(ctx&&!isPlaying()&&ctx.state==='running')ctx.suspend();}catch(e){}}
 
   // --- generators ---
   function loopBuf(gen,sec){
@@ -335,7 +320,7 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
         loop('pink').connect(bq('bandpass',1600,.5)).connect(g(.9)).connect(a);
         env('oceanEnv',a.gain);a.connect(out);break;}
     }
-    const now=ctx.currentTime+.02;
+    const now=ctx.currentTime+.06;
     srcs.forEach(({s,synced})=>{const dur=s.buffer.duration;
       s.start(now,synced?(now%dur):Math.random()*dur*.9);});
     oscs.forEach(o=>o.start(now));
@@ -370,7 +355,9 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
     keepLock=false;wasPlaying=on;
     save();render();
   }
-  function begin(ids){if(!ensureAudio())return;wake();playMix(ids);sync();}
+  // Start only once the audio engine is actually running, so the first buffers aren't starved.
+  async function go(fn){if(!ensureAudio())return;try{await wake();}catch(e){}fn();sync();}
+  function begin(ids){go(()=>playMix(ids));}
 
   // ---------- lock-screen controls (Chrome; ignored where unsupported) ----------
   function makeArt(){
@@ -429,7 +416,7 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
   // ---------- wake lock ----------
   async function requestWake(){try{if('wakeLock' in navigator&&!wakeLock){wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null;});}}catch(e){}}
   function releaseWake(){try{wakeLock&&wakeLock.release();}catch(e){}wakeLock=null;}
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&isPlaying()){requestWake();wake();}});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&isPlaying()){requestWake();if(ctx&&ctx.state!=='running')ctx.resume();}});
 
   // ---------- UI ----------
   function $(id){return document.getElementById(id);}
@@ -441,8 +428,7 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
   SOUNDS.forEach(s=>{
     const b=document.createElement('button');b.className='tile';b.setAttribute('aria-pressed','false');
     b.innerHTML=`<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[s.id]}</svg><span>${s.name}</span>`;
-    b.addEventListener('click',()=>{if(!ensureAudio())return;wake();
-      if(playing[s.id])stopSound(s.id);else startSound(s.id);sync();});
+    b.addEventListener('click',()=>{if(playing[s.id]){stopSound(s.id);sync();}else go(()=>startSound(s.id));});
     tiles[s.id]=b;$('grid').appendChild(b);
   });
 
@@ -491,6 +477,14 @@ main{height:100%;max-width:30rem;margin:0 auto;padding:.5rem 1.1rem .75rem;displ
   dim.addEventListener('click',()=>dim.classList.remove('show'));
 
   render();
+  // Build every sound ahead of time, one per tick, so nothing is computed at the moment playback starts.
+  function prepare(){
+    if(!ensureAudio())return;makeKeep();
+    const keys=[...new Set([...(S.lastMix.includes('white')?['white']:[]),'white','pink','brown','heart','wombEnv','shushEnv','drops','oceanEnv'])];
+    const next=()=>{const k=keys.shift();if(!k)return;try{buf(k);}catch(e){}setTimeout(next,30);};
+    next();
+  }
+  setTimeout(prepare,250);
   if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('sw.js').catch(()=>{});}
 })();
 </script>
