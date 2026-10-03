@@ -1,6 +1,6 @@
 // Caches the app so it opens and plays with no connection.
-const CACHE = 'hush-v1';
-const FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
+const CACHE = 'hush-v2';
+const FILES = ['./', './index.html', './manifest.json', './icon-96.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
 });
